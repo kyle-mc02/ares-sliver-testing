@@ -62,13 +62,18 @@ def tcp_flags_str(flag_set: set) -> str:
 
 # Zeek conn_state derivation (TCP only — simplified but matches Parssegny usage)
 def derive_conn_state(saw_syn: bool, saw_synack: bool, saw_fin_orig: bool,
-                      saw_fin_resp: bool, saw_rst: bool,
+                      saw_fin_resp: bool, rst_orig: bool, rst_resp: bool,
                       data_orig: bool, data_resp: bool) -> str:
-    if saw_rst:
-        if saw_synack:
-            return "RSTR"
-        if saw_syn:
-            return "RSTRH"
+    established = saw_syn and saw_synack
+    had_data = data_orig or data_resp
+
+    if rst_orig or rst_resp:
+        if established and had_data:
+            return "RSTO" if rst_orig else "RSTR"
+        if established and not had_data:
+            return "RSTO" if rst_orig else "RSTR"
+        if saw_syn and not saw_synack:
+            return "RSTRH" if rst_resp else "REJ"
         return "RSTR"
     if saw_syn and saw_synack:
         if saw_fin_orig and saw_fin_resp:
@@ -115,7 +120,7 @@ class Flow:
         "bytes_orig", "bytes_resp",
         "sizes_orig",                       # list of L3 payload sizes, orig direction
         "tcp_flags_seen",                   # set of flag letters (union both dirs)
-        "syn", "synack", "fin_orig", "fin_resp", "rst",
+        "syn", "synack", "fin_orig", "fin_resp", "rst_orig", "rst_resp",
         "data_orig", "data_resp",
     )
 
@@ -131,7 +136,8 @@ class Flow:
         self.bytes_resp = 0
         self.sizes_orig = []
         self.tcp_flags_seen = set()
-        self.syn = self.synack = self.fin_orig = self.fin_resp = self.rst = False
+        self.syn = self.synack = self.fin_orig = self.fin_resp = False
+        self.rst_orig = self.rst_resp = False
         self.data_orig = self.data_resp = False
 
 
@@ -199,14 +205,24 @@ def extract_flows(pcap_path: str) -> list[dict]:
 
             # --- flow lookup ---
             key = flow_key(src_ip, sport, dst_ip, dport, proto)
-            is_orig = (src_ip, sport) == (key[0], key[1])
 
             if key not in flows:
-                if is_orig:
+                # Determine originator by SYN sender — the side that sends
+                # the initial SYN is the true originator (Zeek convention).
+                # For the first packet of a new flow, if it has SYN but not
+                # ACK, this packet's sender is the originator. Otherwise fall
+                # back to IP/port ordering.
+                is_syn = "S" in tcp_flags_pkt and "A" not in tcp_flags_pkt
+                if is_syn:
+                    orig_ep, resp_ep = (src_ip, sport), (dst_ip, dport)
+                elif (src_ip, sport) == (key[0], key[1]):
                     orig_ep, resp_ep = (src_ip, sport), (dst_ip, dport)
                 else:
                     orig_ep, resp_ep = (dst_ip, dport), (src_ip, sport)
                 flows[key] = Flow(ts, orig_ep, resp_ep, proto)
+
+            fl = flows[key]
+            is_orig = (src_ip, sport) == (fl.orig[0], fl.orig[1])
 
             fl = flows[key]
             fl.end_ts = ts
@@ -225,7 +241,7 @@ def extract_flows(pcap_path: str) -> list[dict]:
                 if "F" in tcp_flags_pkt:
                     fl.fin_orig = True
                 if "R" in tcp_flags_pkt:
-                    fl.rst = True
+                    fl.rst_orig = True
             else:
                 fl.pkt_resp += 1
                 fl.bytes_resp += l3_payload
@@ -236,7 +252,7 @@ def extract_flows(pcap_path: str) -> list[dict]:
                 if "F" in tcp_flags_pkt:
                     fl.fin_resp = True
                 if "R" in tcp_flags_pkt:
-                    fl.rst = True
+                    fl.rst_resp = True
 
     # treat all remaining open flows as finished
     finished.extend(flows.values())
@@ -248,7 +264,8 @@ def extract_flows(pcap_path: str) -> list[dict]:
             continue
 
         conn_state = derive_conn_state(
-            fl.syn, fl.synack, fl.fin_orig, fl.fin_resp, fl.rst,
+            fl.syn, fl.synack, fl.fin_orig, fl.fin_resp,
+            fl.rst_orig, fl.rst_resp,
             fl.data_orig, fl.data_resp,
         )
         history = derive_history(fl.data_orig, fl.data_resp, fl.syn, fl.synack)
