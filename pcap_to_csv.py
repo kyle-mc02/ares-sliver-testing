@@ -1,18 +1,4 @@
-"""
-pcap_to_csv.py — PCAP → Netflow-style CSV for Parssegny netflowv9b_no_duration features.
-
-Produces columns:
-  start_time, src_ip, src_port, dst_ip, dst_port, ip_protocol,
-  history, conn_state, tcp_flags,
-  packet_nb, packet_nb_orig, packet_nb_resp,
-  a_l3_payload_size_orig_total, a_l3_payload_size_resp_total,
-  a_l3_payload_size_orig_min, a_l3_payload_size_orig_max,
-  duration
-
-Usage:
-  python3 pcap_to_csv.py -i capture.pcap -o flows.csv [--label malicious|benign]
-"""
-
+# pcap_to_csv.py: converts .pcap files containing HTTPS flows to Netflow-style CSV for Parssegny netflowv9b_no_duration features.
 import argparse
 import csv
 import socket
@@ -22,11 +8,7 @@ from collections import defaultdict
 
 import dpkt
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
+# IP / TCP helpers
 def ip_to_str(addr: bytes) -> str:
     if len(addr) == 4:
         return socket.inet_ntoa(addr)
@@ -34,14 +16,16 @@ def ip_to_str(addr: bytes) -> str:
 
 
 def flow_key(src: str, sport: int, dst: str, dport: int, proto: int):
-    """Canonical 5-tuple — always (lower_ip, lower_port, higher_ip, higher_port)
-    so both directions map to the same key. We also store which side is 'orig'."""
+    # 5-tuple — (lower_ip, lower_port, higher_ip, higher_port)
     if (src, sport) <= (dst, dport):
         return (src, sport, dst, dport, proto)
     return (dst, dport, src, sport, proto)
 
-
-# TCP flag bit positions → Zeek-style letters
+# Mapping from TCP flag bit positions (per RFC 793 + ECN extensions)
+# to single-letter codes used by Zeek and downstream feature extraction.
+# C (CWR) and E (ECE) are tracked here for completeness but are explicitly
+# excluded from the netflowv9b_no_duration feature group used by Parssegny,
+# because their behaviour is OS-specific and would introduce platform bias.
 _TCP_FLAG_BITS = [
     (0x002, "S"),   # SYN
     (0x001, "F"),   # FIN
@@ -55,12 +39,23 @@ _TCP_FLAG_BITS = [
 
 
 def tcp_flags_str(flag_set: set) -> str:
-    """Convert a set of flag letters to a single string, canonical order SFRAPUEC."""
+    # Convert a set of flag letters to a single string
     order = "SFRPAUEC"
     return "".join(c for c in order if c in flag_set)
 
 
-# Zeek conn_state derivation (TCP only — simplified but matches Parssegny usage)
+# Zeek conn_state derivation
+
+# Zeek states produced
+# SF : normal close (SYN, SYNACK, FIN both directions)
+# S1 : established with at least one direction's data
+# S2 : established but no data exchanged
+# S0 : SYN sent, never answered
+# RSTO : originator sent RST after established connection
+# RSTR : responder sent RST after established connection
+# RSTRH: responder sent RST in response to a SYN (no SYNACK)
+# REJ : originator sent RST after sending SYN (no SYNACK)
+# OTH : anything that doesn't fit
 def derive_conn_state(saw_syn: bool, saw_synack: bool, saw_fin_orig: bool,
                       saw_fin_resp: bool, rst_orig: bool, rst_resp: bool,
                       data_orig: bool, data_resp: bool) -> str:
@@ -92,7 +87,7 @@ def derive_conn_state(saw_syn: bool, saw_synack: bool, saw_fin_orig: bool,
     return "OTH"
 
 
-# History string: simplified — we record D (data seen) direction
+# Zeek history string
 def derive_history(data_orig: bool, data_resp: bool,
                    saw_syn: bool, saw_synack: bool) -> str:
     h = ""
@@ -107,10 +102,7 @@ def derive_history(data_orig: bool, data_resp: bool,
     return h if h else "-"
 
 
-# ---------------------------------------------------------------------------
-# Flow accumulator
-# ---------------------------------------------------------------------------
-
+# Per Flow accumulator, collects stats for each of the flows
 class Flow:
     __slots__ = (
         "start_ts", "end_ts",
@@ -140,18 +132,16 @@ class Flow:
         self.rst_orig = self.rst_resp = False
         self.data_orig = self.data_resp = False
 
+# Main flow extraction
+FLOW_TIMEOUT = 300   # seconds until expiring idle flows
 
-# ---------------------------------------------------------------------------
-# Main extraction
-# ---------------------------------------------------------------------------
-
-FLOW_TIMEOUT = 300   # seconds — expire idle flows
-
-
+# Aggregate packets into bidirectional flows by using the 5-tuple
+# then convert each flow into a row mathing the CSV schema of Parssegny
 def extract_flows(pcap_path: str) -> list[dict]:
     flows: dict = {}          # key → Flow
     finished: list[Flow] = []
 
+    # open the pcap file
     with open(pcap_path, "rb") as f:
         try:
             cap = dpkt.pcap.Reader(f)
@@ -164,7 +154,7 @@ def extract_flows(pcap_path: str) -> list[dict]:
         for ts, raw in cap:
             last_ts = ts
 
-            # --- parse Ethernet frame ---
+            # parse Ethernet frame
             try:
                 eth = dpkt.ethernet.Ethernet(raw)
             except Exception:
@@ -185,7 +175,7 @@ def extract_flows(pcap_path: str) -> list[dict]:
             else:
                 continue
 
-            # --- transport layer ---
+            # parse transport layer
             tcp_flags_pkt: set = set()
             sport = dport = 0
 
@@ -203,11 +193,11 @@ def extract_flows(pcap_path: str) -> list[dict]:
             else:
                 continue   # skip non-TCP/UDP
 
-            # --- flow lookup ---
+            # flow lookup
             key = flow_key(src_ip, sport, dst_ip, dport, proto)
 
             if key not in flows:
-                # Determine originator by SYN sender — the side that sends
+                # Determine originator by SYN sender, the side that sends
                 # the initial SYN is the true originator (Zeek convention).
                 # For the first packet of a new flow, if it has SYN but not
                 # ACK, this packet's sender is the originator. Otherwise fall
@@ -222,11 +212,11 @@ def extract_flows(pcap_path: str) -> list[dict]:
                 flows[key] = Flow(ts, orig_ep, resp_ep, proto)
 
             fl = flows[key]
-            is_orig = (src_ip, sport) == (fl.orig[0], fl.orig[1])
-
-            fl = flows[key]
             fl.end_ts = ts
             fl.tcp_flags_seen |= tcp_flags_pkt
+
+            # update counters for direction
+            is_orig = (src_ip, sport) == (fl.orig[0], fl.orig[1])
 
             if is_orig:
                 fl.pkt_orig += 1
@@ -257,7 +247,7 @@ def extract_flows(pcap_path: str) -> list[dict]:
     # treat all remaining open flows as finished
     finished.extend(flows.values())
 
-    # --- convert to row dicts ---
+    # convert to row dicts
     rows = []
     for fl in finished:
         if fl.pkt_orig + fl.pkt_resp == 0:
@@ -294,7 +284,8 @@ def extract_flows(pcap_path: str) -> list[dict]:
 
     return rows
 
-
+# CSV output
+# The column order that parssegny's data pipeline expects
 FIELDNAMES = [
     "start_time", "src_ip", "src_port", "dst_ip", "dst_port", "ip_protocol",
     "history", "conn_state", "tcp_flags",
@@ -314,11 +305,6 @@ def write_csv(rows: list[dict], out_path: str, label: str | None) -> None:
             if label:
                 row["label"] = label
             w.writerow(row)
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(description="PCAP → Netflow CSV (netflowv9b_no_duration schema)")
