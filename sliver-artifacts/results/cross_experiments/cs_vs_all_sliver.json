@@ -1,0 +1,64 @@
+[
+  {
+    "description": "CS -> All Sliver",
+    "train_path": "../artifacts/datasets/dataset_cs.csv",
+    "test_path": "../artifacts/datasets/dataset_all_sliver.csv",
+    "train_label": "CobaltStrike",
+    "test_label": "CobaltStrike",
+    "train_malicious": 160,
+    "train_benign": 615,
+    "test_malicious": 1943,
+    "test_benign": 960,
+    "best_params": {
+      "clf__criterion": "gini",
+      "clf__max_depth": 5,
+      "clf__min_samples_split": 10,
+      "clf__n_estimators": 10
+    },
+    "f1": 0.0061,
+    "precision": 0.4615,
+    "recall": 0.0031,
+    "confusion_matrix": [
+      [
+        6,
+        1937
+      ],
+      [
+        7,
+        953
+      ]
+    ],
+    "timestamp": "2026-05-04T14:42:54.581491"
+  },
+  {
+    "description": "CS -> All Sliver (reverse)",
+    "train_path": "../artifacts/datasets/dataset_all_sliver.csv",
+    "test_path": "../artifacts/datasets/dataset_cs.csv",
+    "train_label": "CobaltStrike",
+    "test_label": "CobaltStrike",
+    "train_malicious": 1943,
+    "train_benign": 960,
+    "test_malicious": 160,
+    "test_benign": 615,
+    "best_params": {
+      "clf__criterion": "gini",
+      "clf__max_depth": 10,
+      "clf__min_samples_split": 2,
+      "clf__n_estimators": 100
+    },
+    "f1": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "confusion_matrix": [
+      [
+        0,
+        160
+      ],
+      [
+        0,
+        615
+      ]
+    ],
+    "timestamp": "2026-05-04T14:43:43.059532"
+  }
+]
