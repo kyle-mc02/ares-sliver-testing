@@ -1,6 +1,15 @@
-This repository contains the code and the data artifacts of submission #61 at ARES 2025.  
+This repository contains the code and the data artifacts of submission #61 at ARES 2025 as well as the code and artifacts for its extension to Sliver for CS6501 at UVA.  
 
 If you use this data or code, please cite the authors.  
+
+# Sliver-Artifacts
+The `sliver-artifacts` directory contains the artifacts from testing the Parssegny et al. approach against the Sliver C2, within each of the subdirectories is
+/captures: Contains all of our PCAP captures from our virtualized network on Proxmox
+/datasets: Contains all of our combined CSV datasets, created from combining different subsets of PCAPs within the captures folder
+/extracted: Contains all of the extracted flows from those CSVs
+/prepared: Contains the CSVs with the remaining flows after they have been filtered through Parssegny et al.'s pipeline
+/results: Contains three subdirectories containing our results for each of the three experiments, the .json output from the final training pipeline
+/scripts: Contains any newly added scripts to make cross-tool training possible, generate benign traffic on a windows machine, and convert PCAPs to the expected format CSV
 
 # Data  
 
